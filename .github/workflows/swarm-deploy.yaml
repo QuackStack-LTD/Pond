@@ -94,13 +94,12 @@ jobs:
           echo "COMPOSE_HTTP_TIMEOUT=${{ format('{0}', inputs.compose-timeout-seconds) }}" >> "$GITHUB_ENV"
 
 
-      - name: Login to GHCR remote daemon
-        if: ${{ secrets.QS_PAT != '' }}
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ secrets.QS_USERNAME || github.actor }}
-          password: ${{ secrets.QS_PAT }}
+          password: ${{ secrets.QS_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Sanity check connection and stack file
         run: |
