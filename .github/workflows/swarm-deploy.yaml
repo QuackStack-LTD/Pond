@@ -15,7 +15,7 @@ on:
         type: string
         required: false
         default: ""
-        description: Comma-separated list of images to pre-pull (e.g. ghcr.io/org/app:latest,ghcr.io/org/api:latest)
+        description: Comma-separated list of images to pre-pull
       docker-api-version:
         type: string
         required: false
@@ -23,19 +23,15 @@ on:
       client-timeout-seconds:
         type: number
         required: false
-        default: 15
+        default: 60
       compose-timeout-seconds:
         type: number
         required: false
-        default: 15
-      traefik-network:
-        type: string
-        required: false
-        default: "shared_network"
+        default: 60
       readiness-attempts:
         type: number
         required: false
-        default: 12
+        default: 18
       readiness-sleep-seconds:
         type: number
         required: false
@@ -44,6 +40,10 @@ on:
         type: boolean
         default: false
         description: Remove the stack and delete ${stack}_* volumes before deploy
+      traefik-network:
+        type: string
+        required: false
+        default: "shared_network"
     secrets:
       SWARM_MANAGER_IP:
         required: true
@@ -62,40 +62,71 @@ permissions:
   contents: read
   packages: read
 
+concurrency:
+  group: deploy-${{ inputs.stack }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: deploy-${{ inputs.stack }}
-      cancel-in-progress: false
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout caller repo
         uses: actions/checkout@v4
 
-      - name: Write TLS certs from secrets
+      - name: Write TLS certs and create Docker context
         run: |
-          mkdir -p ~/.docker
-          umask 077
-          printf "%s" "${{ secrets.SWARM_CLIENT_KEY_PEM }}"  > ~/.docker/key.pem
-          umask 022
-          printf "%s" "${{ secrets.SWARM_CA_PEM }}"          > ~/.docker/ca.pem
-          printf "%s" "${{ secrets.SWARM_CLIENT_CERT_PEM }}" > ~/.docker/cert.pem
-          chmod 0400 ~/.docker/key.pem
-          chmod 0444 ~/.docker/ca.pem ~/.docker/cert.pem
+          set -euo pipefail
+          mkdir -p "$HOME/.docker"
+          printf "%s" "${{ secrets.SWARM_CA_PEM }}"          > "$HOME/.docker/ca.pem"
+          printf "%s" "${{ secrets.SWARM_CLIENT_CERT_PEM }}" > "$HOME/.docker/cert.pem"
+          printf "%s" "${{ secrets.SWARM_CLIENT_KEY_PEM }}"  > "$HOME/.docker/key.pem"
+          chmod 0400 "$HOME/.docker/key.pem"
+          chmod 0444 "$HOME/.docker/ca.pem" "$HOME/.docker/cert.pem"
 
-      - name: Set Docker TLS environment
+          docker context rm qs-remote >/dev/null 2>&1 || true
+          docker context create qs-remote \
+            --docker "host=tcp://${{ secrets.SWARM_MANAGER_IP }}:2376,ca=$HOME/.docker/ca.pem,cert=$HOME/.docker/cert.pem,key=$HOME/.docker/key.pem"
+
+      - name: Common env and retry helper
         run: |
-          echo "DOCKER_HOST=tcp://${{ secrets.SWARM_MANAGER_IP }}:2376" >> "$GITHUB_ENV"
-          echo "DOCKER_TLS_VERIFY=1" >> "$GITHUB_ENV"
-          echo "DOCKER_API_VERSION=${{ inputs.docker-api-version }}" >> "$GITHUB_ENV"
-          echo "DOCKER_CLIENT_TIMEOUT=${{ format('{0}', inputs.client-timeout-seconds) }}" >> "$GITHUB_ENV"
-          echo "COMPOSE_HTTP_TIMEOUT=${{ format('{0}', inputs.compose-timeout-seconds) }}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          {
+            echo "DOCKER_CONTEXT=qs-remote"
+            echo "DOCKER_API_VERSION=${{ inputs.docker-api-version }}"
+            echo "DOCKER_CLIENT_TIMEOUT=${{ inputs.client-timeout-seconds }}"
+            echo "COMPOSE_HTTP_TIMEOUT=${{ inputs.compose-timeout-seconds }}"
+            echo "STACK=${{ inputs.stack }}"
+            echo "COMPOSE_FILE=${{ inputs.compose-file }}"
+            echo "ARTDIR=$GITHUB_WORKSPACE/_deploy_artifacts"
+          } >> "$GITHUB_ENV"
 
+          # retry <attempts> <sleep> <command...> with exponential backoff
+          cat > /tmp/retry.sh << 'RS'
+          set -euo pipefail
+          n=$1; shift
+          s=$1; shift
+          for i in $(seq 1 "$n"); do
+            if "$@"; then exit 0; fi
+            echo "retry $i/$n failed, sleeping ${s}s..." >&2
+            sleep "$s"
+            s=$(( s * 2 ))
+          done
+          echo "command failed after $n attempts: $*" >&2
+          exit 1
+          RS
+          chmod +x /tmp/retry.sh
 
       - name: Login to GHCR
         uses: docker/login-action@v3
+        env:
+          DOCKER_HOST: ""
+          DOCKER_CONTEXT: ""   # ensure the login happens locally, creds later forwarded with --with-registry-auth
         with:
           registry: ghcr.io
           username: ${{ secrets.QS_USERNAME || github.actor }}
@@ -103,111 +134,151 @@ jobs:
 
       - name: Sanity check connection and stack file
         run: |
-          timeout 20s docker info
-          ls -l "${{ inputs.compose-file }}"
+          set -euo pipefail
+          /tmp/retry.sh 5 2 timeout 30s docker --context "$DOCKER_CONTEXT" info
+          ls -l "$COMPOSE_FILE"
 
-      - name: Pre-pull images on the remote node (optional)
+      - name: Pre-pull images on remote with retry
         if: ${{ inputs.images-csv != '' }}
         run: |
-          set -e
+          set -euo pipefail
           IFS=',' read -ra IMGS <<< "${{ inputs.images-csv }}"
           for img in "${IMGS[@]}"; do
             img="$(echo "$img" | xargs)"
             [ -z "$img" ] && continue
-            docker pull "$img"
-            docker image ls --digests "$img" || true
+            for i in 1 2 3; do
+              timeout 180s docker --context "$DOCKER_CONTEXT" pull "$img" && break
+              echo "retry $i..." && sleep $((i*5))
+            done
+            docker --context "$DOCKER_CONTEXT" image ls --digests "$img" || true
           done
 
-      - name: Clean stack and volumes (auto single/multi-node)
+      - name: Clean stack and volumes
         if: ${{ inputs['clean-volumes'] }}
         run: |
-          set -e
+          set -euo pipefail
           STACK="${{ inputs.stack }}"
           PREFIX="${STACK}_"
 
-          docker stack rm "$STACK" || true
-          until [ -z "$(docker stack ps "$STACK" 2>/dev/null)" ]; do sleep 2; done
+          docker --context "$DOCKER_CONTEXT" stack rm "$STACK" || true
+          for i in {1..30}; do
+            if [ -z "$(docker --context "$DOCKER_CONTEXT" stack ps "$STACK" 2>/dev/null)" ]; then break; fi
+            sleep 2
+          done
 
-          NODES=$(docker node ls -q 2>/dev/null | wc -l | tr -d ' ')
+          NODES=$(docker --context "$DOCKER_CONTEXT" node ls -q 2>/dev/null | wc -l | tr -d ' ')
           if [ "$NODES" -le 1 ]; then
-            V=$(docker volume ls -q | grep "^$PREFIX" || true)
-            [ -n "$V" ] && docker volume rm -f $V || true
+            V=$(docker --context "$DOCKER_CONTEXT" volume ls -q | grep "^$PREFIX" || true)
+            [ -n "$V" ] && docker --context "$DOCKER_CONTEXT" volume rm -f $V || true
           else
-            docker service rm ${STACK}_vol_nuke 2>/dev/null || true
-            docker service create --quiet \
+            docker --context "$DOCKER_CONTEXT" service rm ${STACK}_vol_nuke 2>/dev/null || true
+            docker --context "$DOCKER_CONTEXT" service create --quiet \
               --name ${STACK}_vol_nuke \
               --mode global \
               --restart-condition=none \
               --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
               docker:27-cli \
               sh -lc 'V=$(docker volume ls -q | grep "^'"$PREFIX"'") || true; [ -n "$V" ] && docker volume rm -f $V || true'
-            until ! docker service ps ${STACK}_vol_nuke --no-trunc --format '{{.CurrentState}}' \
-              | grep -vqE 'Complete|Shutdown'; do sleep 2; done
-            docker service rm ${STACK}_vol_nuke || true
+            for i in {1..30}; do
+              state=$(docker --context "$DOCKER_CONTEXT" service ps --no-trunc ${STACK}_vol_nuke --format '{{.CurrentState}}' | grep -vE 'Complete|Shutdown' || true)
+              [ -z "$state" ] && break
+              sleep 2
+            done
+            docker --context "$DOCKER_CONTEXT" service rm ${STACK}_vol_nuke || true
           fi
 
-      - name: Deploy stack to remote Swarm (with registry auth)
+      - name: Deploy stack with registry auth
         run: |
-          docker stack deploy \
+          set -euo pipefail
+          docker --context "$DOCKER_CONTEXT" stack deploy \
             --prune \
             --with-registry-auth \
-            -c "${{ inputs.compose-file }}" \
-            "${{ inputs.stack }}"
-          echo "Waiting for services to start scheduling..."
+            -c "$COMPOSE_FILE" \
+            "$STACK"
+          echo "Waiting for services to begin scheduling..."
           sleep 8
-          timeout 20s docker stack services "${{ inputs.stack }}" || true
+          timeout 30s docker --context "$DOCKER_CONTEXT" stack services "$STACK" || true
 
-      - name: Wait until services are Ready (or fail with diagnostics)
+      - name: Wait for readiness or collect diagnostics
         env:
-          STACK: ${{ inputs.stack }}
-          ATTEMPTS: ${{ format('{0}', inputs['readiness-attempts']) }}
-          SLEEP: ${{ format('{0}', inputs['readiness-sleep-seconds']) }}
+          ATTEMPTS: ${{ inputs['readiness-attempts'] }}
+          SLEEP: ${{ inputs['readiness-sleep-seconds'] }}
         run: |
-          set -e
+          set -euo pipefail
+          mkdir -p "$ARTDIR"
+          ready_or_fail=1
           for i in $(seq 1 "$ATTEMPTS"); do
-            echo "Attempt $i/$ATTEMPTS: checking replicas..."
-            OUT="$(timeout 15s docker stack services "$STACK" --format '{{.Name}} {{.Replicas}}' || true)"
+            echo "Attempt $i/$ATTEMPTS"
+            OUT="$(timeout 20s docker --context "$DOCKER_CONTEXT" stack services "$STACK" --format '{{.Name}} {{.Replicas}}' || true)"
             echo "$OUT"
-            TOTAL=$(echo "$OUT" | wc -l | tr -d ' ')
-            READY=$(echo "$OUT" | awk '{ split($2,a,"/"); if (a[1]==a[2]) c++ } END { print c+0 }')
+            # Ignore zero-replica services in readiness math
+            TOTAL=$(echo "$OUT" | awk '$2 !~ /^0\/0$/ {print}' | wc -l | tr -d ' ')
+            READY=$(echo "$OUT" | awk '$2 !~ /^0\/0$/ { split($2,a,"/"); if (a[1]==a[2]) c++ } END { print c+0 }')
             if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq "$TOTAL" ]; then
-              echo "All services are ready."
-              exit 0
+              echo "All non-zero services are ready."
+              ready_or_fail=0
+              break
             fi
             sleep "$SLEEP"
           done
 
-          echo "Some services failed to reach desired state. Collecting diagnostics..."
-          echo "== Service listing =="
-          timeout 20s docker stack services "$STACK" || true
-          echo
-          echo "== Per-service task status (with reasons) =="
-          for SVC in $(timeout 15s docker stack services "$STACK" --format '{{.Name}}' || true); do
-            echo "---- $SVC tasks ----"
-            timeout 20s docker service ps --no-trunc "$SVC" --format '{{.Name}}  {{.CurrentState}}  {{.Error}}  {{.Message}}' || true
-            echo
-          done
-          echo "== Failing service logs (last 150 lines) =="
-          for SVC in $(timeout 15s docker stack services "$STACK" --format '{{.Name}} {{.Replicas}}' | awk '$2 !~ /([0-9]+)\/\1/ {print $1}'); do
-            echo "---- logs for $SVC ----"
-            timeout 25s docker service logs "$SVC" --raw --tail 150 || true
-            echo
-          done
+          if [ "$ready_or_fail" -eq 0 ]; then
+            exit 0
+          fi
+
+          echo "Collecting diagnostics..."
+          timeout 30s docker --context "$DOCKER_CONTEXT" stack services "$STACK" > "$ARTDIR/services.txt" || true
+
+          {
+            echo "== Per-service task status =="
+            for SVC in $(timeout 20s docker --context "$DOCKER_CONTEXT" stack services "$STACK" --format '{{.Name}}' || true); do
+              echo "---- $SVC tasks ----"
+              timeout 40s docker --context "$DOCKER_CONTEXT" service ps --no-trunc "$SVC" \
+                --format '{{.Name}}  {{.CurrentState}}  {{.Error}}  {{.Message}}' || true
+              echo
+            done
+          } | tee "$ARTDIR/tasks.txt"
+
+          {
+            echo "== Failing service logs (last 150 lines) =="
+            for SVC in $(timeout 20s docker --context "$DOCKER_CONTEXT" stack services "$STACK" --format '{{.Name}} {{.Replicas}}' | awk '$2 !~ /([0-9]+)\/\1/ {print $1}'); do
+              echo "---- logs for $SVC ----"
+              timeout 40s docker --context "$DOCKER_CONTEXT" service logs "$SVC" --raw --tail 150 || true
+              echo
+            done
+          } | tee "$ARTDIR/failing-logs.txt"
+
+          # Also print a brief summary to the job log
+          echo "== Summary =="
+          cat "$ARTDIR/services.txt" || true
+
           exit 1
 
-      - name: (Always) Brief Traefik dump for this stack only
+      - name: Upload diagnostics artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swarm-${{ inputs.stack }}-diagnostics
+          path: _deploy_artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Always dump brief Traefik context
         if: always()
         env:
           TRAEFIK_NET: ${{ inputs.traefik-network }}
-          STACK: ${{ inputs.stack }}
         run: |
+          set -euo pipefail
+          TRAEFIK_SVC=""
           for NAME in traefik traefik_traefik reverse-proxy proxy edge; do
-            if timeout 8s docker service inspect "$NAME" >/dev/null 2>&1; then TRAEFIK_SVC="$NAME"; break; fi
+            if timeout 8s docker --context "$DOCKER_CONTEXT" service inspect "$NAME" >/dev/null 2>&1; then
+              TRAEFIK_SVC="$NAME"; break
+            fi
           done
           if [ -n "$TRAEFIK_SVC" ]; then
-            echo "== Traefik logs (last 200 lines) =="
-            timeout 20s docker service logs "$TRAEFIK_SVC" --raw --tail 200 | \
-              egrep -i "$STACK|frontend@swarm|tb-api@swarm" || true
+            echo "== Traefik logs (last 200 lines, filtered) =="
+            timeout 30s docker --context "$DOCKER_CONTEXT" service logs "$TRAEFIK_SVC" --raw --tail 200 | \
+              egrep -i "${STACK}|frontend@swarm" || true
           else
             echo "Traefik service not found."
           fi
