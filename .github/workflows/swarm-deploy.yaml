@@ -139,12 +139,7 @@ jobs:
       #     /tmp/retry.sh 5 2 timeout 30s docker --context "$DOCKER_CONTEXT" info
       #     ls -l "$COMPOSE_FILE"
 
-      # - name: Verify local Docker config
-      #   run: |
-      #     set -euo pipefail
-      #     echo "=== Local Docker config ==="
-      #     cat ~/.docker/config.json | jq -r '.auths."ghcr.io".auth' | base64 -d || echo "No GHCR auth found"
-
+      
       - name: Login to GHCR on remote swarm
         run: |
           set -euo pipefail
@@ -152,7 +147,13 @@ jobs:
             docker --context "$DOCKER_CONTEXT" login ghcr.io \
             -u "${{ secrets.QS_USERNAME || github.actor }}" \
             --password-stdin
-      
+
+      - name: Verify local Docker config
+        run: |
+          set -euo pipefail
+          echo "=== Local Docker config ==="
+          cat ~/.docker/config.json | jq -r '.auths."ghcr.io".auth' | base64 -d || echo "No GHCR auth found"
+          
       - name: Pre-pull images on remote with retry
         if: ${{ inputs.images-csv != '' }}
         run: |
