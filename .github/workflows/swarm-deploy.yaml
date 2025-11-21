@@ -138,6 +138,13 @@ jobs:
           /tmp/retry.sh 5 2 timeout 30s docker --context "$DOCKER_CONTEXT" info
           ls -l "$COMPOSE_FILE"
 
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.QS_USERNAME || secrets.QS_USERNAME }}
+          password: ${{ secrets.QS_PAT || secrets.QS_PAT }}
+          logout: true
+
       - name: Pre-pull images on remote with retry
         if: ${{ inputs.images-csv != '' }}
         run: |
