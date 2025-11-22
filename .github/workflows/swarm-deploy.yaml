@@ -151,20 +151,20 @@ jobs:
           echo "=== Local Docker config ==="
           cat ~/.docker/config.json | jq -r '.auths."ghcr.io".auth' | base64 -d || echo "No GHCR auth found"
           
-      - name: Pre-pull images on remote with retry
-        if: ${{ inputs.images-csv != '' }}
-        run: |
-          set -euo pipefail
-          IFS=',' read -ra IMGS <<< "${{ inputs.images-csv }}"
-          for img in "${IMGS[@]}"; do
-            img="$(echo "$img" | xargs)"
-            [ -z "$img" ] && continue
-            for i in 1 2 3; do
-              timeout 180s docker --context "$DOCKER_CONTEXT" pull "$img" && break
-              echo "retry $i..." && sleep $((i*5))
-            done
-            docker --context "$DOCKER_CONTEXT" image ls --digests "$img" || true
-          done
+      # - name: Pre-pull images on remote with retry
+      #   if: ${{ inputs.images-csv != '' }}
+      #   run: |
+      #     set -euo pipefail
+      #     IFS=',' read -ra IMGS <<< "${{ inputs.images-csv }}"
+      #     for img in "${IMGS[@]}"; do
+      #       img="$(echo "$img" | xargs)"
+      #       [ -z "$img" ] && continue
+      #       for i in 1 2 3; do
+      #         timeout 180s docker --context "$DOCKER_CONTEXT" pull "$img" && break
+      #         echo "retry $i..." && sleep $((i*5))
+      #       done
+      #       docker --context "$DOCKER_CONTEXT" image ls --digests "$img" || true
+      #     done
 
       - name: Clean stack and volumes
         if: ${{ inputs['clean-volumes'] }}
