@@ -1,0 +1,94 @@
+name: Traefik Init
+
+on:
+  workflow_call:
+    inputs:
+      stack_name:
+        type: string
+        default: "traefik"
+      compose_file:
+        type: string
+        default: "stacks/traefik/docker-stack.yaml"
+      image:
+        type: string
+        default: "traefik:3.1"
+      docker_api_version:
+        type: string
+        default: "1.47"
+    secrets:
+      SWARM_MANAGER_IP:
+        required: true
+      SWARM_CA_PEM:
+        required: true
+      SWARM_CLIENT_CERT_PEM:
+        required: true
+      SWARM_CLIENT_KEY_PEM:
+        required: true
+      QS_USERNAME:
+        required: false
+      QS_PAT:
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      exists: ${{ steps.detect.outputs.exists }}
+    env:
+      DOCKER_API_VERSION: ${{ inputs.docker_api_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write TLS certs and create Docker context
+        env:
+          SWARM_MANAGER_IP:      ${{ secrets.SWARM_MANAGER_IP }}
+          SWARM_CA_PEM:          ${{ secrets.SWARM_CA_PEM }}
+          SWARM_CLIENT_CERT_PEM: ${{ secrets.SWARM_CLIENT_CERT_PEM }}
+          SWARM_CLIENT_KEY_PEM:  ${{ secrets.SWARM_CLIENT_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.docker"
+          printf "%s" "$SWARM_CA_PEM"          > "$HOME/.docker/ca.pem"
+          printf "%s" "$SWARM_CLIENT_CERT_PEM" > "$HOME/.docker/cert.pem"
+          printf "%s" "$SWARM_CLIENT_KEY_PEM"  > "$HOME/.docker/key.pem"
+          chmod 0400 "$HOME/.docker/key.pem"
+          chmod 0444 "$HOME/.docker/ca.pem" "$HOME/.docker/cert.pem"
+          docker context rm qs-remote >/dev/null 2>&1 || true
+          docker context create qs-remote \
+            --docker "host=tcp://$SWARM_MANAGER_IP:2376,ca=$HOME/.docker/ca.pem,cert=$HOME/.docker/cert.pem,key=$HOME/.docker/key.pem"
+
+      - name: Sanity check
+        run: timeout 30s docker --context qs-remote info
+
+      - id: detect
+        env:
+          STACK: ${{ inputs.stack_name }}
+        run: |
+          if docker --context qs-remote stack ls --format '{{.Name}}' | grep -qx "$STACK"; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip message (no extra runner)
+        if: ${{ steps.detect.outputs.exists == 'true' }}
+        run: echo "Traefik already exists; skipping init."
+
+  deploy_if_missing:
+    needs: detect
+    if: ${{ needs.detect.outputs.exists == 'false' }}
+    uses: QuackStack-LTD/Pond/.github/workflows/swarm-deploy.yaml@main
+    with:
+      stack: ${{ inputs.stack_name }}
+      compose-file: ${{ inputs.compose_file }}
+      images-csv: ${{ inputs.image }}
+      docker-api-version: ${{ inputs.docker_api_version }}
+      clean-volumes: false
+      readiness-attempts: 18
+      readiness-sleep-seconds: 10
+    secrets: inherit
+

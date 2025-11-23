@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v3.5.1
+    command:
+      # Providers
+      - --providers.swarm=true
+      - --providers.swarm.exposedByDefault=false
+
+      # EntryPoints
+      - --entrypoints.web.address=:80
+      # Global HTTP -> HTTPS redirect
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=https
+      - --entrypoints.websecure.address=:443
+
+      # ACME (HTTP-01, matches your current setup)
+      - --certificatesresolvers.myresolver.acme.email=quackstack.ltd@gmail.com
+      - --certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.myresolver.acme.httpchallenge=true
+      - --certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web
+      # If you prefer HTTPS-only issuance later, replace the 2 lines above with:
+      # - --certificatesresolvers.myresolver.acme.tlschallenge=true
+
+      # API / Dashboard (no external publish of 8080)
+      - --api.dashboard=true
+      - --api.insecure=false
+
+      # Health / ping
+      - --ping=true
+
+      # Logs
+      - --log.level=INFO
+      - --accesslog=true
+
+      # (Optional) tighten upstream H1 pooling a bit:
+      # - --serversTransport.forwardingTimeouts.idleConnTimeout=10s
+      # - --serversTransport.maxIdleConnsPerHost=2
+
+    # optional resolver DNS inside the container
+    dns: [1.1.1.1, 8.8.8.8]
+
+    ports:
+      # long syntax + host mode keeps things predictable on a single manager
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certs:/letsencrypt
+
+    networks:
+      - shared_network
+
+    healthcheck:
+      # use internal ping (no need to expose 8080)
+      test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:8080/ping || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+    deploy:
+      replicas: 1                   # single ACME writer
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 30s
+      update_config:
+        order: stop-first
+        parallelism: 1
+        delay: 5s
+      labels:
+        - traefik.enable=true
+        # Tell Traefik which overlay to dial backends on (critical)
+        - traefik.swarm.network=shared_network
+
+        # Dashboard (HTTPS) — protected with basic auth
+        - traefik.http.routers.traefik.rule=Host(`traefik.quackstack.net`)
+        - traefik.http.routers.traefik.entrypoints=websecure
+        - traefik.http.routers.traefik.tls.certresolver=myresolver
+        - traefik.http.services.traefik.loadbalancer.server.port=8080
+        - traefik.http.routers.traefik.middlewares=traefik-basicauth,traefik-sec-headers
+
+        # Basic auth user: replace with your own bcrypt hash (escape $ -> $$)
+        - traefik.http.middlewares.traefik-basicauth.basicauth.users=admin:$$2y$$05$$3nngZKMwNdpr9hGTDq.ZFeWXIFNVmQFXkGbxi2FHTouD9NLy3Jbvy
+
+        # Light security headers on the dashboard route
+        - traefik.http.middlewares.traefik-sec-headers.headers.stsSeconds=15552000
+        - traefik.http.middlewares.traefik-sec-headers.headers.stsIncludeSubdomains=true
+        - traefik.http.middlewares.traefik-sec-headers.headers.stsPreload=true
+        - traefik.http.middlewares.traefik-sec-headers.headers.contentTypeNosniff=true
+        - traefik.http.middlewares.traefik-sec-headers.headers.browserXssFilter=true
+        - traefik.http.middlewares.traefik-sec-headers.headers.referrerPolicy=no-referrer-when-downgrade
+
+volumes:
+  traefik-certs:
+
+networks:
+  shared_network:
+    external: true

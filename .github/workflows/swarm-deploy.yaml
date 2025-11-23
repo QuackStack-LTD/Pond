@@ -1,4 +1,4 @@
-name: Deploy Stack to Swarm (Reusable)
+name: Deploy Stack to Swarm
 
 on:
   workflow_call:

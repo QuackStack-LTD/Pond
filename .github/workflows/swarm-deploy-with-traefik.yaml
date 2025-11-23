@@ -1,0 +1,99 @@
+name: Deploy Stack With Traefik Auto Init 
+
+on:
+  workflow_call:
+    inputs:
+      docker_api_version:
+        type: string
+        required: false
+        default: "1.47"
+      traefik_stack_name:
+        type: string
+        required: false
+        default: "traefik"
+      traefik_compose_file:
+        type: string
+        required: false
+        default: "docker-stacks/traefik/docker-stack.yaml"
+      traefik_image:
+        type: string
+        required: false
+        default: "traefik:3.1"
+      stack:
+        type: string
+        required: true
+      compose_file:
+        type: string
+        required: true
+      images_csv:
+        type: string
+        required: false
+        default: ""
+      client_timeout_seconds:
+        type: number
+        required: false
+        default: 60
+      compose_timeout_seconds:
+        type: number
+        required: false
+        default: 60
+      readiness_attempts:
+        type: number
+        required: false
+        default: 18
+      readiness_sleep_seconds:
+        type: number
+        required: false
+        default: 10
+      clean_volumes:
+        type: boolean
+        required: false
+        default: false
+      traefik_network:
+        type: string
+        required: false
+        default: "shared_network"
+
+    secrets:
+      SWARM_MANAGER_IP:
+        required: true
+      SWARM_CA_PEM:
+        required: true
+      SWARM_CLIENT_CERT_PEM:
+        required: true
+      SWARM_CLIENT_KEY_PEM:
+        required: true
+      QS_USERNAME:
+        required: false
+      QS_PAT:
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  init-traefik:
+    uses: QuackStack-LTD/Pond/.github/workflows/traefik-init-if-missing.yaml@main
+    with:
+      stack_name: ${{ inputs.traefik_stack_name }}
+      compose_file: ${{ inputs.traefik_compose_file }}
+      image: ${{ inputs.traefik_image }}
+      docker_api_version: ${{ inputs.docker_api_version }}
+    secrets: inherit
+
+  deploy:
+    needs: init-traefik
+    uses: QuackStack-LTD/Pond/.github/workflows/swarm-deploy.yaml@main
+    with:
+      stack: ${{ inputs.stack }}
+      compose-file: ${{ inputs.compose_file }}
+      images-csv: ${{ inputs.images_csv }}
+      docker-api-version: ${{ inputs.docker_api_version }}
+      client-timeout-seconds: ${{ inputs.client_timeout_seconds }}
+      compose-timeout-seconds: ${{ inputs.compose_timeout_seconds }}
+      readiness-attempts: ${{ inputs.readiness_attempts }}
+      readiness-sleep-seconds: ${{ inputs.readiness_sleep_seconds }}
+      clean-volumes: ${{ inputs.clean_volumes }}
+      traefik-network: ${{ inputs.traefik_network }}
+    secrets: inherit
