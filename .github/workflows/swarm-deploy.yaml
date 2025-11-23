@@ -200,6 +200,14 @@ jobs:
             docker --context "$DOCKER_CONTEXT" service rm ${STACK}_vol_nuke || true
           fi
 
+      - name: Login to GHCR on remote swarm
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.QS_PAT || secrets.GITHUB_TOKEN }}" | \
+            docker --context "$DOCKER_CONTEXT" login ghcr.io \
+            -u "${{ secrets.QS_USERNAME || github.actor }}" \
+            --password-stdin
+
       - name: Deploy stack with registry auth
         run: |
           set -euo pipefail
