@@ -80,10 +80,19 @@ jobs:
         shell: bash
 
     steps:
-      - name: Checkout caller repo
+      - name: Resolve stack repo
+        id: repo
+        run: |
+          if [ -z "${{ inputs.compose-file-repo }}" ]; then
+            echo "repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "repo=${{ inputs.compose-file-repo }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout stack repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.compose-file-repo }}
+          repository: ${{ steps.repo.outputs.repo }}
 
       - name: Write TLS certs and create Docker context
         run: |
