@@ -93,6 +93,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.repo.outputs.repo }}
+          path: stack
 
       - name: Write TLS certs and create Docker context
         run: |
@@ -117,7 +118,7 @@ jobs:
             echo "DOCKER_CLIENT_TIMEOUT=${{ inputs.client-timeout-seconds }}"
             echo "COMPOSE_HTTP_TIMEOUT=${{ inputs.compose-timeout-seconds }}"
             echo "STACK=${{ inputs.stack }}"
-            echo "COMPOSE_FILE=${{ inputs.compose-file-repo }}/${{ inputs.compose-file }}"
+            echo "COMPOSE_FILE=stack/${{ inputs.compose-file }}"
             echo "ARTDIR=$GITHUB_WORKSPACE/_deploy_artifacts"
           } >> "$GITHUB_ENV"
 
