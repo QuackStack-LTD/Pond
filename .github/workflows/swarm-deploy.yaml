@@ -117,7 +117,7 @@ jobs:
             echo "DOCKER_CLIENT_TIMEOUT=${{ inputs.client-timeout-seconds }}"
             echo "COMPOSE_HTTP_TIMEOUT=${{ inputs.compose-timeout-seconds }}"
             echo "STACK=${{ inputs.stack }}"
-            echo "COMPOSE_FILE=${{ inputs.compose-file }}"
+            echo "COMPOSE_FILE=${{ inputs.compose-file-repo }}/${{ inputs.compose-file }}"
             echo "ARTDIR=$GITHUB_WORKSPACE/_deploy_artifacts"
           } >> "$GITHUB_ENV"
 
