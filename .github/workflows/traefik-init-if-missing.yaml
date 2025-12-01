@@ -3,19 +3,19 @@ name: Traefik Init
 on:
   workflow_call:
     inputs:
-      stack_name:
+      stack-name:
         type: string
         default: "traefik"
-      compose_file:
+      compose-file:
         type: string
         default: "stacks/traefik/docker-stack.yaml"
-      compose_file_repo:
+      compose-file-repo:
         type: string
         default: "QuackStack-LTD/Pond"
       image:
         type: string
         default: "traefik:3.1"
-      docker_api_version:
+      docker-api-version:
         type: string
         default: "1.47"
     secrets:
@@ -42,7 +42,7 @@ jobs:
     outputs:
       exists: ${{ steps.detect.outputs.exists }}
     env:
-      DOCKER_API_VERSION: ${{ inputs.docker_api_version }}
+      DOCKER_API_VERSION: ${{ inputs.docker-api-version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,7 +69,7 @@ jobs:
 
       - id: detect
         env:
-          STACK: ${{ inputs.stack_name }}
+          STACK: ${{ inputs.stack-name }}
         run: |
           if docker --context qs-remote stack ls --format '{{.Name}}' | grep -qx "$STACK"; then
             echo "exists=true"  >> "$GITHUB_OUTPUT"
@@ -86,11 +86,11 @@ jobs:
     if: ${{ needs.detect.outputs.exists == 'false' }}
     uses: QuackStack-LTD/Pond/.github/workflows/swarm-deploy.yaml@main
     with:
-      stack: ${{ inputs.stack_name }}
-      compose-file: ${{ inputs.compose_file }}
-      compose-file-repo: ${{ inputs.compose_file_repo }}
+      stack: ${{ inputs.stack-name }}
+      compose-file: ${{ inputs.compose-file }}
+      compose-file-repo: ${{ inputs.compose-file-repo }}
       images-csv: ${{ inputs.image }}
-      docker-api-version: ${{ inputs.docker_api_version }}
+      docker-api-version: ${{ inputs.docker-api-version }}
       clean-volumes: false
       readiness-attempts: 18
       readiness-sleep-seconds: 10
