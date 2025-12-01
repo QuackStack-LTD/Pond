@@ -11,6 +11,7 @@ on:
         default: "stacks/traefik/docker-stack.yaml"
       compose-file-repo:
         type: string
+        required: false
         default: "QuackStack-LTD/Pond"
       image:
         type: string
