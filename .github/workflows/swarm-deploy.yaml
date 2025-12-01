@@ -11,6 +11,10 @@ on:
         type: string
         required: true
         description: Path to docker stack file in caller repo
+      compose-file_repo:
+        type: string
+        default: ""
+        description: Repo for docker stack file
       images-csv:
         type: string
         required: false
@@ -78,6 +82,8 @@ jobs:
     steps:
       - name: Checkout caller repo
         uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.compose_file_repo }}
 
       - name: Write TLS certs and create Docker context
         run: |
