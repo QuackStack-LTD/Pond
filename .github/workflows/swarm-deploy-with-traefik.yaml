@@ -73,17 +73,17 @@ permissions:
   packages: read
 
 jobs:
-  init-traefik:
+  init-traefik-if-missing:
     uses: QuackStack-LTD/Pond/.github/workflows/traefik-init-if-missing.yaml@main
     with:
-      stack_name: ${{ inputs.traefik_stack_name }}
-      compose_file: ${{ inputs.traefik_compose_file }}
+      stack-name: ${{ inputs.traefik_stack_name }}
+      compose-file: ${{ inputs.traefik_compose_file }}
       image: ${{ inputs.traefik_image }}
-      docker_api_version: ${{ inputs.docker_api_version }}
+      docker-api-version: ${{ inputs.docker_api_version }}
     secrets: inherit
 
   deploy:
-    needs: init-traefik
+    needs: init-traefik-if-missing
     uses: QuackStack-LTD/Pond/.github/workflows/swarm-deploy.yaml@main
     with:
       stack: ${{ inputs.stack }}
