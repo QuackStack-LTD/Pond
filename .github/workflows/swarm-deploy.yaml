@@ -11,7 +11,7 @@ on:
         type: string
         required: true
         description: Path to docker stack file in caller repo
-      compose-file_repo:
+      compose-file-repo:
         type: string
         default: ""
         description: Repo for docker stack file
@@ -83,7 +83,7 @@ jobs:
       - name: Checkout caller repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.compose_file_repo }}
+          repository: ${{ inputs.compose-file-repo }}
 
       - name: Write TLS certs and create Docker context
         run: |
