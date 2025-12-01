@@ -9,6 +9,9 @@ on:
       compose_file:
         type: string
         default: "stacks/traefik/docker-stack.yaml"
+      compose_file_repo:
+        type: string
+        default: "QuackStack-LTD/Pond"
       image:
         type: string
         default: "traefik:3.1"
@@ -85,6 +88,7 @@ jobs:
     with:
       stack: ${{ inputs.stack_name }}
       compose-file: ${{ inputs.compose_file }}
+      compose-file-repo: ${{ inputs.compose_file_repo }}
       images-csv: ${{ inputs.image }}
       docker-api-version: ${{ inputs.docker_api_version }}
       clean-volumes: false
