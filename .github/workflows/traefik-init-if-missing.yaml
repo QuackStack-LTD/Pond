@@ -81,6 +81,14 @@ jobs:
       - name: Skip message (no extra runner)
         if: ${{ steps.detect.outputs.exists == 'true' }}
         run: echo "Traefik already exists; skipping init."
+        
+      - name: Ensure shared_network exists
+        if: ${{ steps.detect.outputs.exists == 'false' }}
+        run: |
+          set -euo pipefail
+          docker --context qs-remote network ls --filter scope=swarm --format '{{.Name}}' | grep -qx 'shared_network' \
+            || docker --context qs-remote network create --driver overlay --attachable shared_network
+
 
   deploy_if_missing:
     needs: detect
