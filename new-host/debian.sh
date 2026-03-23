@@ -152,6 +152,10 @@ echo "SWARM_CLIENT_KEY_PEM:"
 cat key.pem
 echo ""
 
+echo "Docker API Key:"
+docker version --format '{{.Client.APIVersion}}'
+echo ""
+
 echo "==============================================="
 echo ""
 echo "Done."
