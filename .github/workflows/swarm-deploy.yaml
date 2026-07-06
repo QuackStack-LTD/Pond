@@ -199,8 +199,12 @@ jobs:
         if: ${{ inputs.images-csv != '' }}
         run: |
           set -euo pipefail
-          mkdir -p "$ARTDIR"
-          RESOLVED_COMPOSE="$ARTDIR/$(basename "$COMPOSE_FILE").resolved.yml"
+          COMPOSE_DIR="$(dirname "$COMPOSE_FILE")"
+          RESOLVED_DIR="$ARTDIR/compose"
+          rm -rf "$RESOLVED_DIR"
+          mkdir -p "$RESOLVED_DIR"
+          cp -a "$COMPOSE_DIR"/. "$RESOLVED_DIR"/
+          RESOLVED_COMPOSE="$RESOLVED_DIR/$(basename "$COMPOSE_FILE").resolved.yml"
           cp "$COMPOSE_FILE" "$RESOLVED_COMPOSE"
 
           IFS=',' read -ra IMGS <<< "${{ inputs.images-csv }}"
