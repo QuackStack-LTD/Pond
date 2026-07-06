@@ -19,7 +19,7 @@ on:
         type: string
         required: false
         default: ""
-        description: Comma-separated list of images to pre-pull
+        description: Comma-separated list of images to pull and apply to matching compose image repositories
       docker-api-version:
         type: string
         required: false
@@ -119,6 +119,7 @@ jobs:
             echo "COMPOSE_HTTP_TIMEOUT=${{ inputs.compose-timeout-seconds }}"
             echo "STACK=${{ inputs.stack }}"
             echo "COMPOSE_FILE=stack/${{ inputs.compose-file }}"
+            echo "DEPLOY_COMPOSE_FILE=stack/${{ inputs.compose-file }}"
             echo "ARTDIR=$GITHUB_WORKSPACE/_deploy_artifacts"
           } >> "$GITHUB_ENV"
 
@@ -165,9 +166,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "=== Local Docker config ==="
-          cat ~/.docker/config.json | jq -r '.auths."ghcr.io".auth' | base64 -d || echo "No GHCR auth found"
+          if jq -e '.auths."ghcr.io"' ~/.docker/config.json >/dev/null; then
+            echo "GHCR auth configured"
+          else
+            echo "No GHCR auth found"
+          fi
           
-      - name: Pre-pull images on remote with retry
+      - name: Pull requested images on remote with retry
         if: ${{ inputs.images-csv != '' }}
         run: |
           set -euo pipefail
@@ -175,12 +180,76 @@ jobs:
           for img in "${IMGS[@]}"; do
             img="$(echo "$img" | xargs)"
             [ -z "$img" ] && continue
+            pulled=0
             for i in 1 2 3; do
-              timeout 180s docker --context "$DOCKER_CONTEXT" pull "$img" && break
+              if timeout 180s docker --context "$DOCKER_CONTEXT" pull "$img"; then
+                pulled=1
+                break
+              fi
               echo "retry $i..." && sleep $((i*5))
             done
-            docker --context "$DOCKER_CONTEXT" image ls --digests "$img" || true
+            if [ "$pulled" -ne 1 ]; then
+              echo "::error::Failed to pull requested image: $img"
+              exit 1
+            fi
+            docker --context "$DOCKER_CONTEXT" image ls --digests "$img"
           done
+
+      - name: Apply requested image tags to compose file
+        if: ${{ inputs.images-csv != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTDIR"
+          RESOLVED_COMPOSE="$ARTDIR/$(basename "$COMPOSE_FILE").resolved.yml"
+          cp "$COMPOSE_FILE" "$RESOLVED_COMPOSE"
+
+          IFS=',' read -ra IMGS <<< "${{ inputs.images-csv }}"
+          for img in "${IMGS[@]}"; do
+            img="$(echo "$img" | xargs)"
+            [ -z "$img" ] && continue
+            python3 - "$RESOLVED_COMPOSE" "$img" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          requested_image = sys.argv[2]
+
+          def image_repository(ref: str) -> str:
+              ref = ref.split("@", 1)[0]
+              slash = ref.rfind("/")
+              colon = ref.rfind(":")
+              if colon > slash:
+                  return ref[:colon]
+              return ref
+
+          requested_repo = image_repository(requested_image)
+          pattern = re.compile(r'^(\s*image:\s*)(["\']?)([^"\'\s]+)\2(\s*)$')
+
+          lines = path.read_text().splitlines()
+          updated = []
+          matches = 0
+
+          for line in lines:
+              match = pattern.match(line)
+              if match and image_repository(match.group(3)) == requested_repo:
+                  prefix, quote, _current_image, suffix = match.groups()
+                  line = f"{prefix}{quote}{requested_image}{quote}{suffix}"
+                  matches += 1
+              updated.append(line)
+
+          if matches == 0:
+              print(f"::error::Requested image repository {requested_repo} was not found in compose file {path}")
+              sys.exit(1)
+
+          path.write_text("\n".join(updated) + "\n")
+          print(f"Applied {requested_image} to {matches} compose image line(s)")
+          PY
+          done
+
+          echo "DEPLOY_COMPOSE_FILE=$RESOLVED_COMPOSE" >> "$GITHUB_ENV"
+          echo "=== Effective compose images ==="
+          grep -nE '^\s*image:' "$RESOLVED_COMPOSE"
 
       - name: Clean stack and volumes
         if: ${{ inputs['clean-volumes'] }}
@@ -230,7 +299,7 @@ jobs:
           docker --context "$DOCKER_CONTEXT" stack deploy \
             --prune \
             --with-registry-auth \
-            -c "$COMPOSE_FILE" \
+            -c "$DEPLOY_COMPOSE_FILE" \
             "$STACK"
           echo "Waiting for services to begin scheduling..."
           sleep 8
