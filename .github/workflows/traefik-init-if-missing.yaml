@@ -45,7 +45,7 @@ jobs:
     env:
       DOCKER_API_VERSION: ${{ inputs.docker-api-version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Write TLS certs and create Docker context
         env:
@@ -104,4 +104,3 @@ jobs:
       readiness-attempts: 18
       readiness-sleep-seconds: 10
     secrets: inherit
-
